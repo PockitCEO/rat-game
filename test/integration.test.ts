@@ -80,12 +80,18 @@ async function main() {
   )
   console.log('   ✓ Agent 1 joined at (5, 5)')
   
-  // Give agent 1 starter pack (3 items: 1 sword, 1 shield, 1 potion)
+  // Give agent 1 starter pack (cheese + sword)
   await world.executeAction(
     agent1.address,
     'GameItems',
-    'mintBatch',
-    [agent1.address, [1, 2, 3], [1, 1, 1]]
+    'mint',
+    [agent1.address, 1, 1] // 1 cheese
+  )
+  await world.executeAction(
+    agent1.address,
+    'GameItems',
+    'mint',
+    [agent1.address, 2, 1] // 1 sword
   )
   console.log('   ✓ Agent 1 received starter pack')
   
@@ -102,8 +108,14 @@ async function main() {
   await world.executeAction(
     agent2.address,
     'GameItems',
-    'mintBatch',
-    [agent2.address, [1, 2, 3], [1, 1, 1]]
+    'mint',
+    [agent2.address, 1, 1] // 1 cheese
+  )
+  await world.executeAction(
+    agent2.address,
+    'GameItems',
+    'mint',
+    [agent2.address, 2, 1] // 1 sword
   )
   console.log('   ✓ Agent 2 received starter pack\n')
   
@@ -185,18 +197,18 @@ async function main() {
   const p2x = Number(pos2[0]), p2y = Number(pos2[1])
   const agentCount = Number(count)
   
-  // Check inventory (each agent should have 3 items)
-  const hasItems1 = inv1[0].length === 3 && inv1[1].every((b: any) => Number(b) === 1)
-  const hasItems2 = inv2[0].length === 3 && inv2[1].every((b: any) => Number(b) === 1)
+  // Check inventory (each agent should have 2 items: cheese + sword)
+  const hasItems1 = inv1[0].length === 2 && inv1[1].every((b: any) => Number(b) === 1)
+  const hasItems2 = inv2[0].length === 2 && inv2[1].every((b: any) => Number(b) === 1)
   
   if (p1x === 6 && p1y === 5 && p2x === 7 && p2y === 6 && agentCount === 2 && hasItems1 && hasItems2) {
     console.log('   ✅ All assertions passed!')
     console.log('   ✓ Positions correct')
     console.log('   ✓ Agent count correct')
-    console.log('   ✓ Inventories correct (3 items each)\n')
+    console.log('   ✓ Inventories correct (2 items each: cheese + sword)\n')
   } else {
     console.log('   ❌ Assertion failed!\n')
-    console.log(`   Expected: pos1=(6, 5), pos2=(7, 6), count=2, 3 items each`)
+    console.log(`   Expected: pos1=(6, 5), pos2=(7, 6), count=2, 2 items each`)
     console.log(`   Got: pos1=(${p1x}, ${p1y}), pos2=(${p2x}, ${p2y}), count=${agentCount}`)
     console.log(`   Items: agent1=${inv1[0].length}, agent2=${inv2[0].length}`)
     process.exit(1)
