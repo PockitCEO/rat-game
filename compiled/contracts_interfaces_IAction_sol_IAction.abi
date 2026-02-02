@@ -1,0 +1,1 @@
+[{"inputs":[{"internalType":"address","name":"actor","type":"address"},{"internalType":"bytes","name":"params","type":"bytes"}],"name":"execute","outputs":[{"internalType":"bool","name":"success","type":"bool"}],"stateMutability":"nonpayable","type":"function"}]
