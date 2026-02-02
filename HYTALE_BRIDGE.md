@@ -1,48 +1,180 @@
-# Hytale Bridge Plugin
+# Hytale Bridge
 
 Sync Hytale inventory ↔ Rat Game blockchain (in-memory).
 
 ## Architecture
 
 ```
-Hytale Server (Java)
-    ↓ REST API
+Hytale (JSON mods)
+    ↓ Script hooks (Lua/JSON)
 Rat Game Server (TypeScript + tevm)
     ↓
 GameItems Contract (ERC1155)
 ```
 
-**No mainnet, no gas, instant transactions.** Just proving the pattern works.
+**No mainnet, no gas, instant transactions.** Pure data-driven modding.
 
-## Setup
+## How Hytale Modding Works
 
-### 1. Start Rat Game Server
-
-```bash
-cd rat-game
-npm run server
-```
-
-Server runs on `http://localhost:3000`.
-
-### 2. Install Hytale Plugin
+Hytale uses **JSON data files** in `%APPDATA%/Hytale/UserData/Mods/`:
 
 ```
-plugins/
-└── RatGameBridge.jar
+YourMod/
+├── manifest.json          # Mod metadata
+├── Common/                # Client-side assets
+└── Server/                # Server-side logic
+    ├── Item/Items/        # Item definitions
+    ├── Drops/             # Loot tables
+    └── BarterShops/       # NPC trades
 ```
 
-Configure in `plugins/RatGameBridge/config.yml`:
-```yaml
-bridge-url: http://localhost:3000
-item-mapping:
-  hytale:cheese: 1
-  hytale:iron_sword: 2
+**Key insight:** Everything is JSON. No Java/C# plugins. Changes update in real-time.
+
+## Bridge Integration Strategy
+
+### Option 1: HTTP Polling (Simple)
+
+Add a **custom item** that triggers HTTP calls when used:
+
+```json
+// Server/Item/Items/Special/Item_BlockchainSync.json
+{
+  "Name": "Blockchain Sync Crystal",
+  "OnUse": {
+    "Type": "CustomScript",
+    "ScriptId": "blockchain_sync"
+  }
+}
 ```
 
-### 3. Player joins
+Player uses crystal → Game calls external script → Syncs with bridge API.
 
-Plugin auto-syncs inventory from blockchain to Hytale.
+**Limitation:** Hytale may not support HTTP in scripts (unclear from docs).
+
+### Option 2: External Monitor (Practical)
+
+Run a **file watcher** that monitors Hytale's save files:
+
+```
+Hytale Save Files (JSON)
+    ↓ File watcher
+Bridge Monitor (TypeScript)
+    ↓ REST API
+Rat Game Server
+```
+
+**How it works:**
+1. Player picks up cheese in Hytale → Saved to player inventory JSON
+2. File watcher detects change → Reads new inventory state
+3. Monitor calls `/bridge/mint` → Mints ERC1155 onchain
+4. On next sync, blockchain state → Updates Hytale save file
+
+### Option 3: Custom Loot Table (Immediate)
+
+**Easiest approach:** Make items obtainable via loot tables, track ownership offchain:
+
+```json
+// Server/Drops/Custom/Drop_BlockchainChest.json
+{
+  "Entries": [
+    {
+      "Item": "hytale:cheese",
+      "Weight": 10,
+      "Quantity": { "Min": 1, "Max": 1 }
+    },
+    {
+      "Item": "hytale:void_scythe",
+      "Weight": 1,
+      "Quantity": { "Min": 1, "Max": 1 }
+    }
+  ]
+}
+```
+
+When player opens chest → Record event externally → Mint NFT.
+
+## Implementation
+
+### 1. Hytale Mod Setup
+
+Create mod at `%APPDATA%/Hytale/UserData/Mods/RatGameBridge/`:
+
+**manifest.json:**
+```json
+{
+  "Group": "PockitCEO",
+  "Name": "Rat Game Bridge",
+  "Version": "1.0",
+  "Description": "Sync inventory to blockchain",
+  "Authors": [{ "Name": "PockitCEO" }],
+  "IncludesAssetPack": true
+}
+```
+
+**Server/Item/Items/Food/Item_Cheese.json:**
+```json
+{
+  "Name": "Blockchain Cheese",
+  "Quality": "Rare",
+  "ItemLevel": 10,
+  "MaxStackSize": 64,
+  "ConsumeTime": 1.0,
+  "FoodValue": 8,
+  "OnConsume": {
+    "Effects": [
+      {
+        "Type": "Heal",
+        "Amount": 8
+      }
+    ]
+  }
+}
+```
+
+### 2. File Watcher (TypeScript)
+
+```typescript
+import { watch } from 'fs'
+import { readFile } from 'fs/promises'
+
+const SAVE_PATH = '%APPDATA%/Hytale/UserData/Worlds/YourWorld/players/'
+
+watch(SAVE_PATH, async (eventType, filename) => {
+  if (eventType === 'change' && filename.endsWith('.json')) {
+    const playerData = JSON.parse(await readFile(filename, 'utf-8'))
+    
+    // Check inventory for tracked items
+    for (const item of playerData.inventory) {
+      if (item.id === 'hytale:cheese') {
+        // Mint on blockchain if not already owned
+        await fetch('http://localhost:3000/bridge/mint', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            playerAddress: playerData.walletAddress,
+            itemId: 1, // Cheese
+            amount: item.count
+          })
+        })
+      }
+    }
+  }
+})
+```
+
+### 3. Bidirectional Sync
+
+**Blockchain → Hytale:**
+```typescript
+// Periodically sync blockchain inventory to Hytale save files
+setInterval(async () => {
+  const inventory = await fetch('http://localhost:3000/bridge/inventory/0x...')
+  const items = await inventory.json()
+  
+  // Update Hytale save file with blockchain state
+  // (Requires writing to player JSON)
+}, 5000)
+```
 
 ## API Endpoints
 
@@ -54,14 +186,6 @@ Plugin auto-syncs inventory from blockchain to Hytale.
   "playerAddress": "0x...",
   "itemId": 1,
   "amount": 1
-}
-```
-
-Response:
-```json
-{
-  "success": true,
-  "txHash": "0x..."
 }
 ```
 
@@ -90,84 +214,64 @@ Response:
 }
 ```
 
-## Event Flow
-
-### Player Picks Up Cheese
-
-1. Hytale fires `PlayerPickupItemEvent`
-2. Plugin calls `POST /bridge/mint` (cheese, 1)
-3. Server mints ERC1155 onchain (instant, in-memory)
-4. Player keeps item in Hytale inventory
-
-### Player Eats Cheese
-
-1. Hytale fires `PlayerItemConsumeEvent`
-2. Plugin calls `POST /bridge/burn` (cheese, 1)
-3. Server burns ERC1155 onchain
-4. Item removed from blockchain inventory
-
-### Player Joins Server
-
-1. Hytale fires `PlayerJoinEvent`
-2. Plugin calls `GET /bridge/inventory/{address}`
-3. Server returns onchain items
-4. Plugin spawns items in Hytale inventory
-
 ## Item Mapping
 
-```yaml
-# config.yml
-item-mapping:
-  hytale:cheese: 1                # Cheese (heals)
-  hytale:iron_sword: 2            # Sword (combat)
-  hytale:golden_apple: 3          # Add more items
-  hytale:diamond: 4
+```json
+// config.json
+{
+  "itemMapping": {
+    "hytale:cheese": 1,
+    "hytale:void_scythe": 2,
+    "hytale:mithril_sword": 3
+  }
+}
 ```
 
-Maps Hytale item IDs → ERC1155 token IDs.
+## Development Workflow
 
-## Development
+1. **Start Rat Game server:**
+   ```bash
+   cd rat-game && npm run server
+   ```
 
-### Test Mint/Burn
+2. **Install Hytale mod:**
+   - Copy `RatGameBridge/` to `%APPDATA%/Hytale/UserData/Mods/`
+   - Restart Hytale or create new world with mod enabled
 
-```bash
-# Mint cheese for player
-curl -X POST http://localhost:3000/bridge/mint \
-  -H "Content-Type: application/json" \
-  -d '{"playerAddress":"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266","itemId":1,"amount":5}'
+3. **Run file watcher:**
+   ```bash
+   npm run watch:hytale
+   ```
 
-# Check inventory
-curl http://localhost:3000/bridge/inventory/0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
-
-# Burn cheese
-curl -X POST http://localhost:3000/bridge/burn \
-  -H "Content-Type: application/json" \
-  -d '{"playerAddress":"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266","itemId":1,"amount":1}'
-```
-
-## Plugin Code (Java)
-
-See `hytale-plugin/` for full implementation:
-- Event listeners (pickup, consume, join)
-- REST client (calls bridge API)
-- Item mapping (Hytale ↔ blockchain)
-- Inventory sync on join
+4. **Test:**
+   - Pick up cheese in Hytale
+   - Check blockchain: `curl http://localhost:3000/bridge/inventory/0x...`
+   - Eat cheese
+   - Verify burned onchain
 
 ## Benefits
 
-✅ **Instant transactions** — In-memory chain, no latency
+✅ **No Java plugins** — Pure JSON data modding
+✅ **Real-time updates** — Changes apply instantly in-game
 ✅ **Provable inventory** — All items as ERC1155 NFTs
-✅ **Cross-server** — Take items to other Hytale servers using same bridge
+✅ **Cross-server portable** — Take items between Hytale servers
 ✅ **Anti-duping** — Blockchain enforces uniqueness
-✅ **Verifiable** — Query onchain inventory anytime
+
+## Limitations
+
+⚠️ **File watching latency** — 1-5 second delay for sync
+⚠️ **No native HTTP** — Hytale may not support HTTP in scripts (need file watcher)
+⚠️ **Save file format** — Need to reverse-engineer player JSON schema
 
 ## Next Steps
 
-1. Add more items to mapping
-2. Implement trading (transfer between players)
-3. Add crafting (burn multiple items, mint new one)
-4. Build admin panel (spawn items, check player inventories)
+1. Research Hytale save file format (player inventory JSON)
+2. Build file watcher that monitors `%APPDATA%/Hytale/UserData/Worlds/*/players/`
+3. Map Hytale item IDs → ERC1155 token IDs
+4. Implement bidirectional sync (blockchain ↔ save files)
+5. Test with real Hytale instance
 
 ---
 
-**No mainnet, no gas, just proving the pattern works.**
+**Current status:** Hytale modding is JSON-based. Bridge needs file watcher, not Java plugin.
+

@@ -1,9 +1,0 @@
-name: RatGameBridge
-version: 1.0.0
-main: com.pockitceo.ratgamebridge.RatGameBridge
-api-version: 1.19
-description: Sync Hytale inventory to blockchain
-author: PockitCEO
-
-# Note: Hytale will have its own plugin API
-# This is a Bukkit/Spigot scaffold for testing

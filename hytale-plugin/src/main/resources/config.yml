@@ -1,8 +1,0 @@
-# Bridge URL (Rat Game server)
-bridge-url: http://localhost:3000
-
-# Item mapping: Hytale item ID → ERC1155 token ID
-item-mapping:
-  minecraft:golden_apple: 1      # Cheese (placeholder until Hytale items known)
-  minecraft:iron_sword: 2        # Sword
-  # Add more items as needed
