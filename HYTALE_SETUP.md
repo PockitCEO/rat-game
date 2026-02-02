@@ -399,11 +399,323 @@ First boot loads all assets (~30k items). Subsequent boots use AOT cache:
 - First boot: ~3.5 seconds
 - With cache: ~1.5 seconds
 
+## Advanced: Networking & Plugin Development
+
+### Packet-Based Communication
+
+Hytale uses a **packet-based networking system** for all client-server communication:
+
+```
+Client <---> Server
+   |           |
+Packet      Packet
+Encoder     Decoder
+   |           |
+ByteBuf <-> ByteBuf
+```
+
+**Key components:**
+- **Packet**: Data structure with serialization (`Packet` interface)
+- **PacketRegistry**: Maps packet IDs to classes
+- **PacketHandler**: Processes incoming packets
+- **PacketEncoder/Decoder**: Serializes/deserializes to bytes
+
+### Built-in Packet Categories
+
+| Category | Direction | Examples |
+|----------|-----------|----------|
+| `auth` | Bidirectional | AuthToken, ConnectAccept |
+| `connection` | Bidirectional | Connect, Disconnect, Ping |
+| `setup` | S→C | WorldSettings, AssetInitialize |
+| `player` | C→S | ClientMovement, MouseInteraction |
+| `entities` | S→C | EntityUpdates, PlayAnimation |
+| `world` | S→C | SetChunk, ServerSetBlock |
+| `inventory` | Bidirectional | MoveItemStack, SetActiveSlot |
+| `window` | Bidirectional | OpenWindow, CloseWindow |
+| `interface` | S→C | ChatMessage, Notification |
+| `interaction` | Bidirectional | SyncInteractionChains |
+| `camera` | S→C | CameraShakeEffect |
+
+### Creating a Packet Handler (Java Plugin)
+
+```java
+public class MyPacketHandler implements SubPacketHandler {
+    private final MyPlugin plugin;
+    
+    public MyPacketHandler(MyPlugin plugin) {
+        this.plugin = plugin;
+    }
+    
+    @Override
+    public void registerHandlers(IPacketHandler handler) {
+        // Register by packet ID
+        handler.registerHandler(108, this::handleClientMovement);
+        handler.registerHandler(111, this::handleMouseInteraction);
+    }
+    
+    private void handleClientMovement(Packet packet) {
+        ClientMovement movement = (ClientMovement) packet;
+        Vector3d position = movement.getPosition();
+        // Process movement
+    }
+    
+    private void handleMouseInteraction(Packet packet) {
+        MouseInteraction interaction = (MouseInteraction) packet;
+        // Process mouse input
+    }
+}
+
+// Register in plugin setup
+@Override
+protected void setup() {
+    ServerManager serverManager = HytaleServer.get().getServerManager();
+    serverManager.registerSubPacketHandler(new MyPacketHandler(this));
+}
+```
+
+### Sending Packets
+
+**To single player:**
+```java
+player.getConnection().send(packet);
+```
+
+**To all players:**
+```java
+for (Player player : HytaleServer.get().getOnlinePlayers()) {
+    player.getConnection().send(packet);
+}
+```
+
+**To nearby players:**
+```java
+public void sendToNearby(Vector3d position, double radius, Packet packet) {
+    for (Player player : HytaleServer.get().getOnlinePlayers()) {
+        if (player.getPosition().distanceTo(position) <= radius) {
+            player.getConnection().send(packet);
+        }
+    }
+}
+```
+
+### Custom Packets
+
+```java
+public class MyCustomPacket implements Packet {
+    public static final int ID = 5000; // Use high numbers for custom packets
+    
+    private final String message;
+    private final int value;
+    
+    // Deserialize constructor
+    public MyCustomPacket(ByteBuf buffer) {
+        this.message = PacketIO.readString(buffer);
+        this.value = buffer.readInt();
+    }
+    
+    // Create constructor
+    public MyCustomPacket(String message, int value) {
+        this.message = message;
+        this.value = value;
+    }
+    
+    @Override
+    public int getId() {
+        return ID;
+    }
+    
+    @Override
+    public void serialize(ByteBuf buffer) {
+        PacketIO.writeString(buffer, message);
+        buffer.writeInt(value);
+    }
+    
+    @Override
+    public int computeSize() {
+        return PacketIO.stringSize(message) + 4;
+    }
+    
+    public String getMessage() { return message; }
+    public int getValue() { return value; }
+}
+
+// Register custom packet
+@Override
+protected void setup() {
+    PacketRegistry.register(
+        MyCustomPacket.ID,
+        MyCustomPacket.class,
+        MyCustomPacket::new // Deserializer
+    );
+}
+```
+
+### Packet Compression
+
+Large packets are automatically compressed using **Zstd**:
+
+```java
+public class LargeDataPacket implements Packet {
+    public static final boolean IS_COMPRESSED = true;
+    private final byte[] data;
+    
+    @Override
+    public void serialize(ByteBuf buffer) {
+        // Data automatically compressed if IS_COMPRESSED = true
+        buffer.writeBytes(data);
+    }
+}
+```
+
+### Performance: Packet Batching
+
+```java
+public class PacketBatcher {
+    private final List<Packet> pending = new ArrayList<>();
+    private final Player player;
+    
+    public void queue(Packet packet) {
+        pending.add(packet);
+    }
+    
+    public void flush() {
+        if (pending.isEmpty()) return;
+        BatchPacket batch = new BatchPacket(pending);
+        player.getConnection().send(batch);
+        pending.clear();
+    }
+}
+```
+
+### Performance: Delta Compression
+
+Only send changes instead of full state:
+
+```java
+public class EntityStateSync {
+    private final Map<Integer, EntityState> lastSent = new HashMap<>();
+    
+    public void sync(Player player, List<Entity> entities) {
+        List<EntityDelta> deltas = new ArrayList<>();
+        
+        for (Entity entity : entities) {
+            EntityState current = captureState(entity);
+            EntityState last = lastSent.get(entity.getId());
+            
+            if (last == null || !current.equals(last)) {
+                deltas.add(computeDelta(last, current));
+                lastSent.put(entity.getId(), current);
+            }
+        }
+        
+        if (!deltas.isEmpty()) {
+            player.getConnection().send(new EntityDeltaPacket(deltas));
+        }
+    }
+}
+```
+
+### Rate Limiting
+
+Protect against packet spam:
+
+```java
+public class RateLimitedHandler implements SubPacketHandler {
+    private final Map<UUID, RateLimiter> limiters = new ConcurrentHashMap<>();
+    
+    @Override
+    public void registerHandlers(IPacketHandler handler) {
+        handler.registerHandler(MyPacket.ID, this::handleWithRateLimit);
+    }
+    
+    private void handleWithRateLimit(Packet packet) {
+        Player player = getPacketSender();
+        RateLimiter limiter = limiters.computeIfAbsent(
+            player.getUUID(),
+            k -> new RateLimiter(10, 1000) // 10 per second
+        );
+        
+        if (!limiter.tryAcquire()) {
+            getLogger().atWarning().log("Rate limit exceeded for %s", player.getName());
+            return;
+        }
+        
+        processPacket(packet);
+    }
+}
+```
+
+### Useful Packets
+
+**Send chat message:**
+```java
+ChatMessage chatPacket = new ChatMessage(
+    "Hello, World!",
+    ChatMessage.Type.SYSTEM
+);
+player.getConnection().send(chatPacket);
+```
+
+**Show notification:**
+```java
+Notification notification = new Notification(
+    "Achievement Unlocked!",
+    "You found the secret area",
+    Notification.Type.SUCCESS,
+    5000 // Duration in ms
+);
+player.getConnection().send(notification);
+```
+
+**Play sound:**
+```java
+PlaySoundPacket sound = new PlaySoundPacket(
+    "MyPlugin/Sounds/alert",
+    position,
+    1.0f, // Volume
+    1.0f  // Pitch
+);
+player.getConnection().send(sound);
+```
+
+**Update block:**
+```java
+ServerSetBlock setBlock = new ServerSetBlock(
+    position,
+    blockTypeId,
+    blockState
+);
+sendToWorld(world, setBlock);
+```
+
+### Common Pitfalls
+
+**Packet not received:**
+- Verify packet ID is registered
+- Check handler is registered
+- Ensure packet is properly serialized
+- Check for exceptions in handler
+
+**Deserialization errors:**
+- Verify read order matches write order
+- Check data type sizes
+- Validate buffer has enough bytes
+- Add bounds checking
+
+**Connection drops:**
+- Check for unhandled exceptions
+- Verify packet size limits (<1MB recommended)
+- Monitor bandwidth usage
+- Check ping/timeout settings
+
+---
+
 ## Official Resources
 
 - **Server Manual:** https://support.hytale.com/hc/en-us/articles/45326769420827-Hytale-Server-Manual
 - **Maven Repo:** https://maven.hytale.com/release
 - **Example Plugin:** https://github.com/noel-lang/hytale-example-plugin
+- **Networking Skill:** https://skills.sh/mnkyarts/hytale-skills/hytale-networking
 - **Discord:** https://discord.gg/hytale
 
 ## Quick Start Script
