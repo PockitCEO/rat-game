@@ -141,6 +141,105 @@ export class WorldServer {
         res.status(500).json({ error: (error as Error).message })
       }
     })
+    
+    // === HYTALE BRIDGE ENDPOINTS ===
+    
+    // Mint item (player picks up in Hytale)
+    this.app.post('/bridge/mint', async (req: Request, res: Response) => {
+      try {
+        if (!this.world) {
+          return res.status(404).json({ error: 'No world created' })
+        }
+        
+        const { playerAddress, itemId, amount } = req.body
+        
+        if (!playerAddress || !itemId || !amount) {
+          return res.status(400).json({ error: 'Missing playerAddress, itemId, or amount' })
+        }
+        
+        // Mint ERC1155 onchain
+        await this.world.executeAction(
+          playerAddress as Address,
+          'GameItems',
+          'mint',
+          [playerAddress, itemId, amount]
+        )
+        
+        // Broadcast to connected clients
+        this.broadcast({
+          type: 'item_minted',
+          playerAddress,
+          itemId,
+          amount,
+          timestamp: Date.now()
+        })
+        
+        res.json({ success: true })
+      } catch (error) {
+        res.status(500).json({ error: (error as Error).message })
+      }
+    })
+    
+    // Burn item (player consumes in Hytale)
+    this.app.post('/bridge/burn', async (req: Request, res: Response) => {
+      try {
+        if (!this.world) {
+          return res.status(404).json({ error: 'No world created' })
+        }
+        
+        const { playerAddress, itemId, amount } = req.body
+        
+        if (!playerAddress || !itemId || !amount) {
+          return res.status(400).json({ error: 'Missing playerAddress, itemId, or amount' })
+        }
+        
+        // Burn ERC1155 onchain
+        await this.world.executeAction(
+          playerAddress as Address,
+          'GameItems',
+          'burn',
+          [playerAddress, itemId, amount]
+        )
+        
+        // Broadcast to connected clients
+        this.broadcast({
+          type: 'item_burned',
+          playerAddress,
+          itemId,
+          amount,
+          timestamp: Date.now()
+        })
+        
+        res.json({ success: true })
+      } catch (error) {
+        res.status(500).json({ error: (error as Error).message })
+      }
+    })
+    
+    // Get inventory (player joins Hytale)
+    this.app.get('/bridge/inventory/:address', async (req: Request, res: Response) => {
+      try {
+        if (!this.world) {
+          return res.status(404).json({ error: 'No world created' })
+        }
+        
+        const { address } = req.params
+        
+        // Read inventory from GameItems contract
+        const inv = await this.world.readContract('GameItems', 'getInventory', [address])
+        
+        // Format response
+        const items = (inv[0] as bigint[]).map((id, i) => ({
+          id: Number(id),
+          balance: Number((inv[1] as bigint[])[i]),
+          name: (inv[2] as string[])[i]
+        }))
+        
+        res.json({ items })
+      } catch (error) {
+        res.status(500).json({ error: (error as Error).message })
+      }
+    })
   }
   
   private setupWebSocket(): void {
