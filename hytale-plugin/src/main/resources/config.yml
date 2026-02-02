@@ -1,8 +1,0 @@
-# Bridge URL (Rat Game server)
-bridge-url: http://localhost:3000
-
-# Item mapping: Hytale item ID → ERC1155 token ID
-item-mapping:
-  hytale:cheese: 1
-  hytale:void_scythe: 2
-  # Add more items as needed
